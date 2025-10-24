@@ -1,0 +1,118 @@
+//==============================================================================
+// ESP32S3 RFID - PDKS Entegrasyon Rules
+// Tarih: 26.09.2025
+// Konfigürasyon: pdks_config.txt
+//==============================================================================
+
+// PDKS Server Configuration (pdks_config.txt'den)
+// SERVER_IP: 127.0.0.1
+// SERVER_PORT: 5000  
+// API_ENDPOINT: /api/rfid
+// DEVICE_NAME: ESP32_RFID_001
+// LOCATION: GIRIS_KAPISI
+
+//==============================================================================
+// RFID Kart Okunduğunda
+//==============================================================================
+on RFID#1 do
+  // Debug Log
+  LogEntry,"RFID Kart algılandı: [RFID#1] - Cihaz: ESP32_RFID_001 - Lokasyon: GIRIS_KAPISI"
+  
+  // Ekranda "Kart Okunuyor..." mesajını göster (custom.cpp tarafından işlenir)
+  TaskValueSet,1,1,[RFID#1]
+  
+  // PDKS API'ye HTTP POST gönder (pdks_config.txt ayarlarını kullan)
+  // JSON Format: {"card_id":"123456789","device_name":"ESP32_RFID_001","timestamp":"14:30:25","location":"GIRIS_KAPISI","device_serial":"ESP32S3_001"}
+  SendToHTTP,"POST",127.0.0.1,5000,"/api/rfid","card_id=[RFID#1]&device_name=ESP32_RFID_001&timestamp=[%systime%]&location=GIRIS_KAPISI&device_serial=ESP32S3_001"
+  
+  // Alternatif JSON Format (eğer PDKS API JSON bekliyor)
+  // SendToHTTPJSON,"POST",127.0.0.1,5000,"/api/rfid","{\"card_id\":\"[RFID#1]\",\"device_name\":\"ESP32_RFID_001\",\"timestamp\":\"[%systime%]\",\"location\":\"GIRIS_KAPISI\"}"
+endon
+
+//==============================================================================
+// HTTP Response İşleme
+//==============================================================================
+on SendToHTTP#Data do
+  // HTTP Response alındığında log yaz
+  LogEntry,"PDKS API Response: [SendToHTTP#Data] - Status: [SendToHTTP#StatusCode]"
+  
+  // Response'u custom.cpp'ye ilet (TaskValueSet ile)
+  TaskValueSet,2,1,[SendToHTTP#StatusCode]
+  TaskValueSet,2,2,[SendToHTTP#Data]
+endon
+
+//==============================================================================  
+// HTTP Başarı Durumu
+//==============================================================================
+on SendToHTTP#StatusCode=200 do
+  LogEntry,"PDKS API başarılı: 200 - Kullanıcı bilgisi alınıyor"
+  // Başarılı durum custom.cpp tarafından işlenecek
+endon
+
+//==============================================================================
+// HTTP Hata Durumları  
+//==============================================================================
+on SendToHTTP#StatusCode=400 do
+  LogEntry,"PDKS API Hatası: 400 Bad Request - Geçersiz kart ID"
+  TaskValueSet,3,1,400
+endon
+
+on SendToHTTP#StatusCode=404 do
+  LogEntry,"PDKS API Hatası: 404 Not Found - Kart bulunamadı"
+  TaskValueSet,3,1,404
+endon
+
+on SendToHTTP#StatusCode=500 do
+  LogEntry,"PDKS API Hatası: 500 Server Error - Sunucu hatası"
+  TaskValueSet,3,1,500
+endon
+
+//==============================================================================
+// Sistem Başlatma
+//==============================================================================
+on System#Boot do
+  LogEntry,"ESP32S3 RFID System başlatılıyor - PDKS Entegrasyon Aktif"
+  LogEntry,"PDKS Server: 127.0.0.1:5000/api/rfid"
+  LogEntry,"Device: ESP32_RFID_001 - Serial: ESP32S3_001"
+  LogEntry,"Firmware: v1.0.0 - Config: pdks_config.txt"
+endon
+
+//==============================================================================
+// WiFi Bağlantı Durumu
+//==============================================================================
+on WiFi#Connected do
+  LogEntry,"WiFi bağlandı - IP: [%ip%] - PDKS Server bağlantısı hazır"
+endon
+
+on WiFi#Disconnected do
+  LogEntry,"WiFi bağlantısı kesildi - PDKS Server erişimi kaybedildi"
+endon
+
+//==============================================================================
+// Debug ve Test Komutları
+//==============================================================================
+// Test için konsola yazın: event,RFID=123456789
+// Log çıktısı: ESPEasy Log sekmesinde görüntülenecek
+// HTTP Response: SendToHTTP#Data event'i ile alınacak
+
+//==============================================================================
+// Konfigürasyon Notları
+//==============================================================================
+// 1. Controller Settings:
+//    - Protocol: HTTP Advanced
+//    - Method: POST  
+//    - IP: 127.0.0.1
+//    - Port: 5000
+//    - Publish: /api/rfid
+//
+// 2. PDKS API Beklenen Format:
+//    POST /api/rfid
+//    Body: card_id=123456789&device_name=ESP32_RFID_001&timestamp=14:30:25
+//    
+// 3. PDKS API Response Format:
+//    {"success":true,"user_name":"Ali Veli","department":"IT","status":"authorized"}
+//
+// 4. IP Adresi Değiştirme:
+//    Tüm "127.0.0.1" değerlerini PDKS sunucu IP'niz ile değiştirin
+//    Örnek: SendToHTTP,"POST",192.168.1.100,5000,"/api/rfid"
+//==============================================================================

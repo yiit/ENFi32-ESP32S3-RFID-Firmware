@@ -1,0 +1,447 @@
+#include "src/Helpers/_CPlugin_Helper.h"
+#include "usb/usb_hid_rfid.h"  // USB HID callback fonksiyonu için
+#ifdef USES_C011
+
+// #######################################################################################################
+// ########################### Controller Plugin 011: Generic HTTP Advanced ##############################
+// #######################################################################################################
+
+# define CPLUGIN_011
+# define CPLUGIN_ID_011         11
+# define CPLUGIN_NAME_011       "Generic HTTP Advanced"
+
+# define C011_HTTP_METHOD_MAX_LEN          16
+# define C011_HTTP_URI_MAX_LEN             240
+# define C011_HTTP_HEADER_MAX_LEN          256
+# define C011_HTTP_BODY_MAX_LEN            512
+
+
+bool C011_sendBinary = false;
+
+struct C011_ConfigStruct
+{
+
+  void zero_last() {
+    HttpMethod[C011_HTTP_METHOD_MAX_LEN - 1] = 0;
+    HttpUri[C011_HTTP_URI_MAX_LEN - 1]       = 0;
+    HttpHeader[C011_HTTP_HEADER_MAX_LEN - 1] = 0;
+    HttpBody[C011_HTTP_BODY_MAX_LEN - 1]     = 0;
+  }
+
+  char HttpMethod[C011_HTTP_METHOD_MAX_LEN] = { 0 };
+  char HttpUri[C011_HTTP_URI_MAX_LEN]       = { 0 };
+  char HttpHeader[C011_HTTP_HEADER_MAX_LEN] = { 0 };
+  char HttpBody[C011_HTTP_BODY_MAX_LEN]     = { 0 };
+
+};
+
+
+// Forward declarations
+bool load_C011_ConfigStruct(controllerIndex_t ControllerIndex,
+                            String          & HttpMethod,
+                            String          & HttpUri,
+                            String          & HttpHeader,
+                            String          & HttpBody);
+boolean Create_schedule_HTTP_C011(struct EventStruct *event);
+void    DeleteNotNeededValues(String& s,
+                              uint8_t numberOfValuesWanted);
+void    ReplaceTokenByValue(String            & s,
+                            struct EventStruct *event,
+                            bool                sendBinary);
+
+bool CPlugin_011(CPlugin::Function function, struct EventStruct *event, String& string)
+{
+  bool success = false;
+
+  switch (function)
+  {
+    case CPlugin::Function::CPLUGIN_PROTOCOL_ADD:
+    {
+      ProtocolStruct& proto = getProtocolStruct(event->idx); //      = CPLUGIN_ID_011;
+      proto.usesMQTT     = false;
+      proto.usesAccount  = true;
+      proto.usesPassword = true;
+      proto.usesExtCreds = true;
+      proto.defaultPort  = 80;
+      proto.usesID       = false;
+      break;
+    }
+
+    case CPlugin::Function::CPLUGIN_GET_DEVICENAME:
+    {
+      string = F(CPLUGIN_NAME_011);
+      break;
+    }
+
+    case CPlugin::Function::CPLUGIN_INIT:
+    {
+      {
+        MakeControllerSettings(ControllerSettings); // -V522
+
+        if (AllocatedControllerSettings()) {
+          LoadControllerSettings(event->ControllerIndex, *ControllerSettings);
+          C011_sendBinary = ControllerSettings->sendBinary();
+        }
+      }
+      success = init_c011_delay_queue(event->ControllerIndex);
+      break;
+    }
+
+    case CPlugin::Function::CPLUGIN_EXIT:
+    {
+      exit_c011_delay_queue();
+      break;
+    }
+
+    case CPlugin::Function::CPLUGIN_WEBFORM_LOAD:
+    {
+      {
+        String HttpMethod;
+        String HttpUri;
+        String HttpHeader;
+        String HttpBody;
+
+        if (!load_C011_ConfigStruct(event->ControllerIndex, HttpMethod, HttpUri, HttpHeader, HttpBody))
+        {
+          return false;
+        }
+        addTableSeparator(F("HTTP Config"), 2, 3);
+        {
+          uint8_t   choice                     = 0;
+          const __FlashStringHelper *methods[] = { F("GET"), F("POST"), F("PUT"), F("HEAD"), F("PATCH") };
+
+          constexpr int nrOptions = NR_ELEMENTS(methods);
+
+          for (uint8_t i = 0; i < nrOptions; i++)
+          {
+            if (HttpMethod.equals(methods[i])) {
+              choice = i;
+            }
+          }
+
+          const FormSelectorOptions selector(nrOptions, methods);
+          selector.addFormSelector(F("Method"), F("P011httpmethod"), choice);
+        }
+
+        addFormTextBox(F("URI"), F("P011httpuri"), HttpUri, C011_HTTP_URI_MAX_LEN - 1);
+        {
+          htmlEscape(HttpHeader);
+          addFormTextArea(F("Header"), F("P011httpheader"), HttpHeader, C011_HTTP_HEADER_MAX_LEN - 1, 4, 50);
+        }
+        {
+          htmlEscape(HttpBody);
+          addFormTextArea(F("Body"), F("P011httpbody"), HttpBody, C011_HTTP_BODY_MAX_LEN - 1, 8, 50);
+        }
+      }
+      {
+        // Place in scope to delete ControllerSettings as soon as it is no longer needed
+        MakeControllerSettings(ControllerSettings); // -V522
+
+        if (!AllocatedControllerSettings()) {
+          addHtmlError(F("Out of memory, cannot load page"));
+        } else {
+          LoadControllerSettings(event->ControllerIndex, *ControllerSettings);
+          addControllerParameterForm(*ControllerSettings, event->ControllerIndex, ControllerSettingsStruct::CONTROLLER_SEND_BINARY);
+          addFormNote(F("Do not 'percent escape' body when send binary checked"));
+        }
+      }
+      break;
+    }
+
+    case CPlugin::Function::CPLUGIN_WEBFORM_SAVE:
+    {
+      constexpr unsigned size = sizeof(C011_ConfigStruct);
+      void *ptr               = special_calloc(1, size);
+
+      if (ptr != nullptr) {
+        std::shared_ptr<C011_ConfigStruct> customConfig(new (ptr) C011_ConfigStruct);
+
+        if (customConfig) {
+          uint8_t choice    = 0;
+          String  methods[] = { F("GET"), F("POST"), F("PUT"), F("HEAD"), F("PATCH") };
+
+          for (uint8_t i = 0; i < 5; i++)
+          {
+            if (methods[i].equals(customConfig->HttpMethod)) {
+              choice = i;
+            }
+          }
+
+          int httpmethod    = getFormItemInt(F("P011httpmethod"), choice);
+          String httpuri    = webArg(F("P011httpuri"));
+          String httpheader = webArg(F("P011httpheader"));
+          String httpbody   = webArg(F("P011httpbody"));
+
+          strlcpy(customConfig->HttpMethod, methods[httpmethod].c_str(), sizeof(customConfig->HttpMethod));
+          strlcpy(customConfig->HttpUri,    httpuri.c_str(),             sizeof(customConfig->HttpUri));
+          strlcpy(customConfig->HttpHeader, httpheader.c_str(),          sizeof(customConfig->HttpHeader));
+          strlcpy(customConfig->HttpBody,   httpbody.c_str(),            sizeof(customConfig->HttpBody));
+          customConfig->zero_last();
+          SaveCustomControllerSettings(event->ControllerIndex,
+                                       reinterpret_cast<const uint8_t *>(customConfig.get()),
+                                       sizeof(C011_ConfigStruct));
+        }
+      }
+      break;
+    }
+
+    case CPlugin::Function::CPLUGIN_PROTOCOL_SEND:
+    {
+      if (C011_DelayHandler->queueFull(event->ControllerIndex)) {
+        break;
+      }
+      success = Create_schedule_HTTP_C011(event);
+      break;
+    }
+
+    case CPlugin::Function::CPLUGIN_FLUSH:
+    {
+      process_c011_delay_queue();
+      delay(0);
+      break;
+    }
+
+    default:
+      break;
+  }
+  return success;
+}
+
+// ********************************************************************************
+// Generic HTTP request
+// ********************************************************************************
+
+// Uncrustify may change this into multi line, which will result in failed builds
+// *INDENT-OFF*
+bool do_process_c011_delay_queue(cpluginID_t cpluginID, const Queue_element_base& element_base, ControllerSettingsStruct& ControllerSettings) {
+  const C011_queue_element& element = static_cast<const C011_queue_element&>(element_base);
+// *INDENT-ON*
+
+if (!NetworkConnected()) { return false; }
+
+int httpCode = -1;
+
+String response = send_via_http(
+  cpluginID,
+  ControllerSettings,
+  element._controller_idx,
+  element.uri,
+  element.HttpMethod,
+  element.header,
+  element.postStr,
+  httpCode);
+
+// Response'u log et ve element'e kaydet
+addLog(LOG_LEVEL_ERROR, String(F("[C011_PDKS] 📥 HTTP Response Code: ")) + String(httpCode));
+if (response.length() > 0) {
+  addLog(LOG_LEVEL_ERROR, String(F("[C011_PDKS] 📥 Response Body: ")) + response);
+  
+  // Response'u USB HID RFID callback'ine gönder
+  captureAPIResponse(response);
+  addLog(LOG_LEVEL_ERROR, String(F("[C011_PDKS] 🎯 Response USB HID'e gönderildi: ")) + response);
+} else {
+  addLog(LOG_LEVEL_ERROR, F("[C011_PDKS] 📥 Response Body: (boş)"));
+}
+
+// HTTP codes:
+// 1xx Informational response
+// 2xx Success
+return httpCode >= 100 && httpCode < 300;
+}
+
+bool load_C011_ConfigStruct(controllerIndex_t ControllerIndex, String& HttpMethod, String& HttpUri, String& HttpHeader, String& HttpBody) {
+  // Just copy the needed strings and destruct the C011_ConfigStruct as soon as possible
+  constexpr unsigned size = sizeof(C011_ConfigStruct);
+  void *ptr               = special_calloc(1, size);
+
+  if (ptr == nullptr) {
+    return false;
+  }
+
+  std::shared_ptr<C011_ConfigStruct>customConfig(new (ptr) C011_ConfigStruct);
+
+  if (!customConfig) {
+    return false;
+  }
+  LoadCustomControllerSettings(ControllerIndex, reinterpret_cast<uint8_t *>(customConfig.get()), sizeof(C011_ConfigStruct));
+  customConfig->zero_last();
+  move_special(HttpMethod, String(customConfig->HttpMethod));
+  move_special(HttpUri,    String(customConfig->HttpUri));
+  move_special(HttpHeader, String(customConfig->HttpHeader));
+  move_special(HttpBody,   String(customConfig->HttpBody));
+  return true;
+}
+
+// ********************************************************************************
+// Create request
+// ********************************************************************************
+boolean Create_schedule_HTTP_C011(struct EventStruct *event)
+{
+  if (C011_DelayHandler == nullptr) {
+    addLog(LOG_LEVEL_ERROR, F("No C011_DelayHandler"));
+    return false;
+  }
+
+  // LoadTaskSettings(event->TaskIndex); // FIXME TD-er: This can probably be removed
+
+  constexpr unsigned size = sizeof(C011_queue_element);
+  void *ptr               = special_calloc(1, size);
+
+  if (ptr == nullptr) {
+    return false;
+  }
+
+
+  // Add a new element to the queue with the minimal payload
+  std::unique_ptr<C011_queue_element>element(new (ptr) C011_queue_element(event));
+  bool success = C011_DelayHandler->addToQueue(std::move(element));
+
+  if (success) {
+    // Element was added.
+    // Now we try to append to the existing element
+    // and thus preventing the need to create a long string only to copy it to a queue element.
+    C011_queue_element& element = static_cast<C011_queue_element&>(*(C011_DelayHandler->sendQueue.back()));
+
+
+    if (!load_C011_ConfigStruct(event->ControllerIndex, element.HttpMethod, element.uri, element.header, element.postStr))
+    {
+      if (loglevelActiveFor(LOG_LEVEL_ERROR)) {
+        addLogMove(LOG_LEVEL_ERROR, strformat(
+                     F("C011   : %s %s %s %s"),
+                     element.HttpMethod.c_str(),
+                     element.uri.c_str(),
+                     element.header.c_str(),
+                     element.postStr.c_str()));
+      }
+      C011_DelayHandler->sendQueue.pop_back();
+      return false;
+    }
+
+    ReplaceTokenByValue(element.uri,    event, false);
+    ReplaceTokenByValue(element.header, event, false);
+
+    // PDKS Debug - URI'yi gönderimden önce log et
+    addLog(LOG_LEVEL_ERROR, F("[C011_PDKS] 📋 Final URI: "));
+    addLog(LOG_LEVEL_ERROR, element.uri);
+
+    if (element.postStr.length() > 0)
+    {
+      ReplaceTokenByValue(element.postStr, event, C011_sendBinary);
+    }
+
+    // PDKS POST fix: Content-Length header otomatik ekle
+    if (element.HttpMethod.equalsIgnoreCase(F("POST"))) {
+      // POST body boş ve Content-Length yok ise otomatik ekle
+      if (element.postStr.length() == 0) {
+        // Header'da Content-Length var mı kontrol et
+        if (element.header.indexOf(F("Content-Length")) == -1) {
+          if (element.header.length() > 0 && !element.header.endsWith(F("\r\n"))) {
+            element.header += F("\r\n");
+          }
+          element.header += F("Content-Length: 0\r\n");
+          addLog(LOG_LEVEL_ERROR, F("[C011_PDKS] 📋 Content-Length: 0 otomatik eklendi"));
+        }
+      }
+    }
+
+    // PDKS Debug - Final header'ları log et
+    addLog(LOG_LEVEL_ERROR, F("[C011_PDKS] 📋 Final Headers:"));
+    addLog(LOG_LEVEL_ERROR, element.header);
+  } else {
+    addLog(LOG_LEVEL_ERROR, F("C011  : Could not add to delay handler"));
+  }
+
+  Scheduler.scheduleNextDelayQueue(SchedulerIntervalTimer_e::TIMER_C011_DELAY_QUEUE, C011_DelayHandler->getNextScheduleTime());
+  return success;
+}
+
+// parses the string and returns only the the number of name/values we want
+// according to the parameter numberOfValuesWanted
+void DeleteNotNeededValues(String& s, uint8_t numberOfValuesWanted)
+{
+  numberOfValuesWanted++;
+
+  for (uint8_t i = 1; i < 5; i++)
+  {
+    const String startToken(strformat(F("%%%d%%"), i));
+    const String endToken(strformat(F("%%/%d%%"), i));
+
+    // do we want to keep this one?
+    if (i < numberOfValuesWanted)
+    {
+      // yes, so just remove the tokens
+      s.replace(startToken, EMPTY_STRING);
+      s.replace(endToken,   EMPTY_STRING);
+    }
+    else
+    {
+      // remove all the whole strings including tokes
+      int startIndex = s.indexOf(startToken);
+      int endIndex   = s.indexOf(endToken);
+
+      while (startIndex != -1 && endIndex != -1  && endIndex > startIndex)
+      {
+        String p = s.substring(startIndex, endIndex + 4);
+
+        // remove the whole string including tokens
+        s.replace(p, EMPTY_STRING);
+
+        // find next ones
+        startIndex = s.indexOf(startToken);
+        endIndex   = s.indexOf(endToken);
+      }
+    }
+  }
+}
+
+// ********************************************************************************
+// Replace the token in a string by real value.
+//
+// Example:
+// %1%%vname1%____%tskname%____%val1%%/1%%2%%__%%vname2%____%tskname%____%val2%%/2%
+// will become in case of a sensor with 1 value:
+// SENSORVALUENAME1____TASKNAME1____VALUE1  <- everything not between %1% and %/1% will be discarded
+// in case of a sensor with 2 values:
+// SENSORVALUENAME1____TASKNAME1____VALUE1__SENSORVALUENAME2____TASKNAME2____VALUE2
+// ********************************************************************************
+void ReplaceTokenByValue(String& s, struct EventStruct *event, bool sendBinary)
+{
+  // example string:
+  // write?db=testdb&type=%1%%vname1%%/1%%2%;%vname2%%/2%%3%;%vname3%%/3%%4%;%vname4%%/4%&value=%1%%val1%%/1%%2%;%val2%%/2%%3%;%val3%%/3%%4%;%val4%%/4%
+  //	%1%%vname1%,Standort=%tskname% Wert=%val1%%/1%%2%%LF%%vname2%,Standort=%tskname% Wert=%val2%%/2%%3%%LF%%vname3%,Standort=%tskname%
+  //  Wert=%val3%%/3%%4%%LF%%vname4%,Standort=%tskname% Wert=%val4%%/4%
+  # ifndef BUILD_NO_DEBUG
+
+  if (loglevelActiveFor(LOG_LEVEL_DEBUG_MORE)) {
+    addLog(LOG_LEVEL_DEBUG_MORE, F("HTTP before parsing: "));
+    addLog(LOG_LEVEL_DEBUG_MORE, s);
+  }
+  # endif // ifndef BUILD_NO_DEBUG
+  const uint8_t valueCount = getValueCountForTask(event->TaskIndex);
+
+  DeleteNotNeededValues(s, valueCount);
+
+  # ifndef BUILD_NO_DEBUG
+
+  if (loglevelActiveFor(LOG_LEVEL_DEBUG_MORE)) {
+    addLog(LOG_LEVEL_DEBUG_MORE, F("HTTP after parsing: "));
+    addLog(LOG_LEVEL_DEBUG_MORE, s);
+  }
+  # endif // ifndef BUILD_NO_DEBUG
+
+  parseControllerVariables(s, event, !sendBinary);
+
+  # ifndef BUILD_NO_DEBUG
+
+  if (loglevelActiveFor(LOG_LEVEL_DEBUG_MORE)) {
+    addLog(LOG_LEVEL_DEBUG_MORE, F("HTTP after replacements: "));
+    addLog(LOG_LEVEL_DEBUG_MORE, s);
+  }
+  # endif // ifndef BUILD_NO_DEBUG
+  
+  // PDKS Debug - POST body'yi her zaman göster
+  addLog(LOG_LEVEL_ERROR, F("[C011_PDKS] 📋 HTTP Body Final: "));
+  addLog(LOG_LEVEL_ERROR, s);
+}
+
+#endif // ifdef USES_C011

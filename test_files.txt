@@ -1,0 +1,5 @@
+D:\platformio\enfi\ENFi32_24092025_RFID - Kopya\ENFi32_24092025_RFID\src\_C001.cpp
+D:\platformio\enfi\ENFi32_24092025_RFID - Kopya\ENFi32_24092025_RFID\src\_C002.cpp
+D:\platformio\enfi\ENFi32_24092025_RFID - Kopya\ENFi32_24092025_RFID\src\_C003.cpp
+D:\platformio\enfi\ENFi32_24092025_RFID - Kopya\ENFi32_24092025_RFID\src\_C004.cpp
+D:\platformio\enfi\ENFi32_24092025_RFID - Kopya\ENFi32_24092025_RFID\src\_C005.cpp

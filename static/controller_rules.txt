@@ -1,0 +1,94 @@
+//==============================================================================
+// ESP32S3 RFID - PDKS Controller Entegrasyonu Rules
+// Tarih: 26.09.2025
+// Controller: C011 - Generic HTTP Advanced
+// HID RFID Reader Integration
+//==============================================================================
+
+//==============================================================================
+// HID RFID Kart Okunduğunda (main.cpp'den gelen event)
+//==============================================================================
+on RFID do
+  // Debug Log
+  LogEntry,"HID RFID Kart algılandı: [RFID#1] - Cihaz: ESP32_RFID_001"
+  
+  // PDKS API'ye HTTP POST gönder (Controller yerine manual)
+  SendToHTTP,"POST",192.168.1.100,5000,"/api/rfid","card_id=[RFID#1]&device_name=ESP32_RFID_001&timestamp=[%systime%]&location=GIRIS_KAPISI&device_serial=ESP32S3_001"
+  
+  // Custom koda RFID verisini ilet
+  TaskValueSet,1,1,[RFID#1]
+endon
+
+//==============================================================================
+// HTTP Response İşleme (SendToHTTP'den gelen response)
+//==============================================================================
+on http#192.168.1.100=200 do
+  LogEntry,"PDKS API Başarılı: 200 - Kullanıcı bilgisi alınıyor"
+  // Response custom koda iletilecek (SendToHTTP#Data event'i ile)
+endon
+
+on http#192.168.1.100=400 do
+  LogEntry,"PDKS API Hatası: 400 - Geçersiz kart ID"
+  TaskValueSet,3,1,400
+endon
+
+on http#192.168.1.100=404 do
+  LogEntry,"PDKS API Hatası: 404 - Kart bulunamadı"
+  TaskValueSet,3,1,404
+endon
+
+on http#192.168.1.100=500 do
+  LogEntry,"PDKS API Hatası: 500 - Sunucu hatası"
+  TaskValueSet,3,1,500
+endon
+
+//==============================================================================
+// Sistem Başlatma
+//==============================================================================
+on System#Boot do
+  LogEntry,"ESP32S3 RFID System başlatılıyor"
+  LogEntry,"PDKS Controller: Generic HTTP Advanced aktif"
+  LogEntry,"Auto-send: RFID plugin -> HTTP Controller"
+endon
+
+//==============================================================================
+// WiFi Bağlantı Durumu
+//==============================================================================
+on WiFi#Connected do
+  LogEntry,"WiFi bağlandı - IP: [%ip%] - PDKS Controller hazır"
+endon
+
+on WiFi#Disconnected do
+  LogEntry,"WiFi bağlantısı kesildi - Controller queue aktif"
+endon
+
+//==============================================================================
+// Debug - Manual Test
+//==============================================================================
+// Test için konsola: event,RFID=123456789
+// Bu durumda Controller otomatik HTTP POST göndermez
+// Sadece log'da görmek için
+
+//==============================================================================
+// Controller Konfigürasyon Notları
+//==============================================================================
+// 1. Controllers -> Add -> Generic HTTP Advanced
+// 2. Controller Settings:
+//    - Enabled: ✓
+//    - Controller IP: 192.168.1.100 (PDKS sunucu IP'niz)
+//    - Controller Port: 5000
+//    - Controller Publish: /api/rfid
+//    - HTTP Method: POST
+//    - HTTP Header: Content-Type: application/x-www-form-urlencoded
+//    - HTTP Body: card_id=%v1%&device_name=ESP32_RFID_001&timestamp=%systime%&location=GIRIS_KAPISI
+//
+// 3. RFID Device Settings:
+//    - Send to Controller: Controller #1 ✓
+//    - Values: Card ID (%v1%)
+//
+// 4. Avantajlar:
+//    - Otomatik gönderim (Rules gerekmez)
+//    - Queue sistemi (offline durumda)
+//    - Retry logic (bağlantı hatalarında)
+//    - Token replacement (%v1%, %systime%)
+//==============================================================================
